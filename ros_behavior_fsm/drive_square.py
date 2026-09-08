@@ -2,7 +2,6 @@
 import rclpy
 import numpy as np
 from rclpy.node import Node
-from std_msgs.msg import Header
 from geometry_msgs.msg import Twist, Vector3, Pose, Quaternion
 from nav_msgs.msg import Odometry
 from typing import Literal, Optional
@@ -17,6 +16,20 @@ def quat_to_yaw(q: Quaternion) -> float:
     cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
     return np.arctan2(siny_cosp, cosy_cosp)
 
+def print_pose(pose: Pose):
+    print(pose.position.x, pose.position.y)
+    print(quat_to_yaw(pose.orientation)*180/np.pi)
+    
+def short_way_around_angle(angle, ref_angle):
+    diff = quat_to_yaw(angle)-quat_to_yaw(ref_angle)
+    if diff > np.pi:
+        return diff-2*np.pi
+    elif diff < -np.pi:
+        return diff+2*np.pi
+    else:
+        return diff
+
+
 class DriveSquareNode(Node):
     """This node will drive the neato in a hard-coded 1x1m square."""
     def __init__(self):
@@ -30,6 +43,7 @@ class DriveSquareNode(Node):
         self.drive_state: Literal['line'] | Literal['corner'] | Literal['done'] = 'line'
         self.action_started_at: Optional['Pose'] = None
         self.edges_complete = 0
+        self.tweek_factor = 50/4
 
     def compute_and_send_vel(self):
         forward_vel = 0.0
@@ -38,7 +52,7 @@ class DriveSquareNode(Node):
             case 'line':
                 forward_vel = 0.2
             case 'corner':
-                angular_vel = 0.5
+                angular_vel = 0.2
         twist_msg = Twist(linear=Vector3(x=forward_vel,y=0.0,z=0.0), angular=Vector3(x=0.0,y=0.0,z=angular_vel))
         self.vel_publisher.publish(twist_msg)
         
@@ -48,6 +62,7 @@ class DriveSquareNode(Node):
 
         if self.action_started_at is None:
             self.action_started_at = pose
+            print_pose(self.action_started_at)
         
         match self.drive_state:
             case 'line':
@@ -56,11 +71,13 @@ class DriveSquareNode(Node):
                 if dist >= 1:
                     self.drive_state = 'corner'
                     self.action_started_at = pose
+                    print_pose(self.action_started_at)
                     self.compute_and_send_vel()
             case 'corner':
-                if abs(quat_to_yaw(pose.orientation) - quat_to_yaw(self.action_started_at.orientation)) > 90*np.pi/180:
+                if abs(short_way_around_angle(pose.orientation, self.action_started_at.orientation)) > (90-self.tweek_factor)*np.pi/180:
                     self.drive_state = 'line'
                     self.action_started_at = pose
+                    print_pose(self.action_started_at)
                     self.edges_complete += 1
                     self.compute_and_send_vel()
 

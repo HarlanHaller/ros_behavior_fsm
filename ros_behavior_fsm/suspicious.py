@@ -1,0 +1,91 @@
+""" This script explores publishing ROS messages in ROS using Python """
+import rclpy
+import numpy as np
+from rclpy.node import Node
+from geometry_msgs.msg import Twist, Vector3, Pose, Quaternion
+from nav_msgs.msg import Odometry
+from sensor_msgs.msg import PointCloud2
+from std_msgs.msg import String
+from typing import Literal, Optional
+
+class SuspiciousNode(Node):
+    """This node will handle the suspicous behavior."""
+    def __init__(self):
+        """Initializes the SuspiciousNode. No inputs."""
+        super().__init__('suspicious_node')
+        # Create a timer that fires ten times per second
+        timer_period = 0.1
+        self.vel_timer = self.create_timer(timer_period, self.compute_and_send_vel)
+        self.vel_publisher = self.create_publisher(Twist, 'cmd_vel', 10)
+        self.state_publisher = self.create_publisher(String, 'current_state', 10)
+        self.odom_subscriber = self.create_subscription(Odometry, 'odom', self.process_odom, 10)
+        self.state_subscriber = self.create_subscription(String, 'current_state', self.update_state, 10)
+        self.detecter_objetcs_subscriber = self.create_subscription(PointCloud2, 'detected_clusters', self.detected_objects, 10)
+        self.active = False
+
+
+    def update_state(self, msg: String):
+        self.active = (msg.data == "suspicious")
+        print(f"Node: 'suspicious' -- recived state: {msg.data}, active?: {self.active}")
+        
+    def detected_objects(self, msg: PointCloud2):
+        pass
+
+    def compute_and_send_vel(self):
+        forward_vel = 0.0
+        angular_vel = 0.0
+        match self.drive_state:
+            case 'line':
+                forward_vel = 0.2
+            case 'corner':
+                angular_vel = 0.2
+        twist_msg = Twist(linear=Vector3(x=forward_vel,y=0.0,z=0.0), angular=Vector3(x=0.0,y=0.0,z=angular_vel))
+        self.vel_publisher.publish(twist_msg)
+        
+    def process_odom(self, msg: Odometry):
+        """Gets odom data"""
+        pose = msg.pose.pose
+
+        if self.action_started_at is None:
+            self.action_started_at = pose
+            print_pose(self.action_started_at)
+        
+        match self.drive_state:
+            case 'line':
+                dist = np.sqrt((pose.position.x-self.action_started_at.position.x)**2 + 
+                        (pose.position.y-self.action_started_at.position.y)**2)
+                if dist >= 1:
+                    self.drive_state = 'corner'
+                    self.action_started_at = pose
+                    print_pose(self.action_started_at)
+                    self.compute_and_send_vel()
+            case 'corner':
+                if abs(short_way_around_angle(pose.orientation, self.action_started_at.orientation)) > (90-self.tweek_factor)*np.pi/180:
+                    self.drive_state = 'line'
+                    self.action_started_at = pose
+                    print_pose(self.action_started_at)
+                    self.edges_complete += 1
+                    self.compute_and_send_vel()
+
+        if self.edges_complete >= 4:
+            # square complete
+            self.drive_state = 'done'
+            # stop moving
+            self.compute_and_send_vel()
+            # tear down this node
+            raise SystemExit
+
+def main(args=None):
+    """Initializes a node, runs it, and cleans up after termination.
+    Input: args(list) -- list of arguments to pass into rclpy. Default None.
+    """
+    rclpy.init(args=args)      # Initialize communication with ROS
+    node = SuspiciousNode()   # Create our Node
+    try:
+        rclpy.spin(node)           # Run the Node until ready to shutdown
+    finally:
+        # print("exiting cleanly") # Testing if this would code would run
+        rclpy.shutdown()           # cleanup
+
+if __name__ == '__main__':
+    main()

@@ -22,11 +22,11 @@ class PatrolNode(Node):
         self.state_subscriber = self.create_subscription(String, 'current_state', self.update_state, 10)
         self.detected_objects_subscriber = self.create_subscription(PointCloud2, 'detected_clusters', self.on_detected_objects, 10)
         self.active = True
-        self.current_velocity: Tuple[float, float] = (0, 0.0) # forward vel (m/s), angular vel (rad/s)
+        self.current_velocity: Tuple[float, float] = (0.0, 0.0) # forward vel (m/s), angular vel (rad/s)
         self.declare_parameter('wall_follow_distance', 0.5) # m
         self.declare_parameter('patrol_speed', 0.15) # m/s
-        self.declare_parameter('linear_weight', 0.4) # rad/s/m, how much we should turn to correct distance issues
-        self.declare_parameter('angular_weight', 0.2) # rad/s/rad, how much we should turn to correct angle issues
+        self.declare_parameter('linear_weight', 0.6) # rad/s/m, how much we should turn to correct distance issues
+        self.declare_parameter('angular_weight', 0.3) # rad/s/rad, how much we should turn to correct angle issues
 
     def update_state(self, msg: String):
         self.active = (msg.data == "patrol")
@@ -64,17 +64,18 @@ class PatrolNode(Node):
         # our goal is to keep the object wall_follow_distance away and at 270 degrees
         # if it's to far away or too far backward, we should turn to the left a bit
         # if it's too close or too far forward, we should turn to the right a bit
-        linear_error = np.linalg.norm(protected_object) - self.get_parameter('wall_follow_distance')
-        linear_term = self.get_parameter('linear_weight') * linear_error
+        linear_error = np.linalg.norm(protected_object) - self.get_parameter('wall_follow_distance').value
+        linear_term = self.get_parameter('linear_weight').value * linear_error
         angular_error = (np.arctan2(protected_object.y, protected_object.x) - np.pi/2)
-        angular_term = self.get_parameter('angular_weight') * angular_error
-        self.current_velocity[1] = linear_term + angular_term
+        angular_term = self.get_parameter('angular_weight').value * angular_error
         # we'll proceed at the same forward velocity no mater what
-        self.current_velocity[0] = self.get_parameter('patrol_speed')
-        print(f"Using vel={self.current_velocity} to correct linear error of {linear_error:.3f}m and angular error of {angular_error:.3f}rad")
+        angular_velocity = float(linear_term + angular_term)
+        self.current_velocity = (self.get_parameter('patrol_speed').value, angular_velocity)
+        print(f"Using angvel={angular_velocity:.3f} to correct linear error of {linear_error:.3f}m and angular error of {angular_error:.3f}rad")
 
     def compute_and_send_vel(self):
         if self.active:
+            #print(f"sending velocity command for {self.current_velocity}")
             twist_msg = Twist(linear=Vector3(x=self.current_velocity[0],y=0.0,z=0.0), angular=Vector3(x=0.0,y=0.0,z=self.current_velocity[1]))
             self.vel_publisher.publish(twist_msg)
 

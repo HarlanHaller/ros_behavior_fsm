@@ -26,7 +26,8 @@ setup(
         'console_scripts': [
             'drive_square = ros_behavior_fsm.drive_square:main',
             'object_detection = ros_behavior_fsm.object_detection:main',
-            'suspicious = ros_behavior_fsm.suspicious:main'
+            'suspicious = ros_behavior_fsm.suspicious:main',
+            'patrol = ros_behavior_fsm.patrol:main'
         ],
     },
 )

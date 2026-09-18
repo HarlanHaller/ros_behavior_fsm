@@ -2,12 +2,17 @@
 import rclpy
 import numpy as np
 from rclpy.node import Node
-from geometry_msgs.msg import Twist, Vector3, Pose, Quaternion
+from geometry_msgs.msg import Twist, Vector3, Pose, Quaternion, Point, PointStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import String
 from typing import List, Literal, NamedTuple, Optional, Tuple
 from sensor_msgs_py import point_cloud2
+from std_msgs.msg import Header
+import tf2_geometry_msgs
+
+from tf2_ros.buffer import Buffer
+from tf2_ros.transform_listener import TransformListener
 
 def quat_to_yaw(q: Quaternion) -> float:
     """Computes the yaw angle from a quaternion.
@@ -24,7 +29,8 @@ def print_pose(pose: Pose):
     print(quat_to_yaw(pose.orientation)*180/np.pi)
     
 def short_way_around_angle(angle, ref_angle):
-    diff = quat_to_yaw(angle)-quat_to_yaw(ref_angle)
+    # diff = quat_to_yaw(angle)-quat_to_yaw(ref_angle)
+    diff = angle - ref_angle
     if diff > np.pi:
         return diff-2*np.pi
     elif diff < -np.pi:
@@ -39,8 +45,13 @@ class SuspiciousNode(Node):
         # Create a timer that fires ten times per second
         timer_period = 0.1
         self.main_loop_timer = self.create_timer(timer_period, self.main_loop)
+        
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+        
         self.vel_publisher = self.create_publisher(Twist, 'cmd_vel', 10)
         self.state_publisher = self.create_publisher(String, 'current_state', 10)
+        self.dead_zone_publisher = self.create_publisher(PointStamped, 'dead_zone', 10)
         self.odom_subscriber = self.create_subscription(Odometry, 'odom', self.process_odom, 10)
         self.state_subscriber = self.create_subscription(String, 'current_state', self.update_state, 10)
         self.detecter_objetcs_subscriber = self.create_subscription(PointCloud2, 'detected_clusters', self.detected_objects, 10)
@@ -48,15 +59,17 @@ class SuspiciousNode(Node):
         self.active = False
         self.active_pos: NamedTuple = None
         self.active_pos_start: NamedTuple = None
+        self.watching_start_time = 0
         
         self.timeOut = 5
-        self.kP = 0.2 #TODO: set this value
+        self.kP = 0.5 #TODO: set this value
+        self.max_acceptable_movement = 0.15 #TODO: set this value
         
         self.target_turn_amount = None;
         self.turn_start_angle = None;
         self.current_angle = None;
         
-        self.mode: Literal['Setup'] | Literal['Turning'] | Literal['Watching'] = 'Setup'
+        self.mode: Literal['Setup'] | Literal['Turning'] | Literal['Watching'] | Literal['Turning_Back']= 'Setup'
 
 
     def update_state(self, msg: String):
@@ -64,7 +77,7 @@ class SuspiciousNode(Node):
         print(f"Node: 'suspicious' -- recived state: {msg.data}, active?: {self.active}")
         
     def detected_objects(self, msg: PointCloud2):
-        if (not self.active) or self.mode == 'Turning':
+        if (not self.active) or self.mode == 'Turning' or self.mode == 'Turning_Back':
             return
         objects = point_cloud2.read_points_list(msg, ["x", "y"])
         closest = None
@@ -76,42 +89,80 @@ class SuspiciousNode(Node):
             self.active_pos = objects[closest]
             if self.mode == 'Setup':
                 self.target_turn_amount = np.arctan2(self.active_pos.y, self.active_pos.x)
+                # print(f'turning amount: {self.target_turn_amount}')
                 self.mode = 'Turning'
             elif self.mode == 'Watching':
                 if self.active_pos_start is None:
                     self.active_pos_start = self.active_pos
+                    self.watching_start_time = self.get_clock().now().seconds_nanoseconds()[0]
         else:
             self.active_pos = None
         
         
     def main_loop(self):
+        # print(self.mode)
         if not self.active or self.mode == 'Setup':
             return
-        if self.mode == 'Turning':
+        elif self.mode == 'Turning':
             self.compute_and_send_vel()
             if self.check_complete():
                 self.send_stop()
                 self.mode = 'Watching'
-        if self.mode == 'Watching':
-            pass
+                print('Watching PoS')
+        elif self.mode == 'Watching':
+            p1 = self.active_pos
+            p2 = self.active_pos_start
+            # print(f'current time: {self.get_clock().now().seconds_nanoseconds()[0]}, start time: {self.watching_start_time}')
+            if p2 is None:
+                return
+            if self.get_clock().now().seconds_nanoseconds()[0] - self.watching_start_time > self.timeOut:
+                print("Must have been the wind")
+                header = Header(stamp=rclpy.time.Time(), frame_id="base_link")
+                point = Point(x = self.active_pos.x, y = self.active_pos.y)
+                dead_zone_base_link = PointStamped(header = header, point = point)
+                
+                dead_zone = self.tf_buffer.transform(dead_zone_base_link, 'odom')
+                self.dead_zone_publisher.publish(dead_zone)
+                
+                self.target_turn_amount = -self.target_turn_amount
+                self.turn_start_angle = None
+                self.mode = 'Turning_Back'
+            if ((p1.x-p2.x)**2 + (p1.y-p2.y)**2) >= self.max_acceptable_movement**2:
+                self.reset()
+                self.state_publisher.publish(String(data = "attack"))
+                print("Woof Woof - Attacking!!!!")
+        elif self.mode == 'Turning_Back':
+            self.compute_and_send_vel()
+            if self.check_complete():
+                self.send_stop()
+                print('Back to work')
+                self.reset()
+                self.state_publisher.publish(String(data = "patrol"))
+            
         
         
     def process_odom(self, msg: Odometry):
         if not self.active:
             return
         self.current_angle = quat_to_yaw(msg.pose.pose.orientation)
-        if self.turn_start_angle is None:
+        if self.turn_start_angle is None and (self.mode == 'Turning' or self.mode=='Turning_Back' ):
             self.turn_start_angle = self.current_angle
             
             
     def check_complete(self):
+        if self.turn_start_angle is None:
+            return
         angle_traveled = short_way_around_angle(self.current_angle, self.turn_start_angle)
-        return abs(abs(angle_traveled) - abs(self.target_turn_amount)) < np.deg2rad(5)
+        return abs(angle_traveled - self.target_turn_amount) < np.deg2rad(5)
 
     def compute_and_send_vel(self):
+        if self.turn_start_angle is None:
+            return
         angle_traveled = short_way_around_angle(self.current_angle, self.turn_start_angle)
-        error = abs(self.target_turn_amount) - abs(angle_traveled)
-        angular_vel = -self.kP*error
+        # print(f'angle traveled {angle_traveled}')
+        error = self.target_turn_amount - angle_traveled
+        # print(f'target turn amount: {self.target_turn_amount}, error: {error}')
+        angular_vel = self.kP*error
         
         twist_msg = Twist(linear=Vector3(x=0.0,y=0.0,z=0.0), angular=Vector3(x=0.0,y=0.0,z=angular_vel))
         self.vel_publisher.publish(twist_msg)
@@ -119,6 +170,15 @@ class SuspiciousNode(Node):
     def send_stop(self):
         twist_msg = Twist(linear=Vector3(x=0.0,y=0.0,z=0.0), angular=Vector3(x=0.0,y=0.0,z=0.0))
         self.vel_publisher.publish(twist_msg)
+        
+    def reset(self):
+        self.active = False
+        self.mode = 'Setup'
+        self.active_pos_start = None
+        self.active_pos = None
+        self.target_turn_amount = None;
+        self.turn_start_angle = None;
+        self.current_angle = None;
 
 
 def main(args=None):

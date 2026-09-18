@@ -21,7 +21,7 @@ class ObjectDetectionNode(Node):
         self.dbg_point_pub = self.create_publisher(PointCloud2, 'laser_points', 10)
         # TODO: make these ROS params
         self.min_range = 0.2
-        self.max_range = 2
+        self.max_range = 3
         self.cluster_dist_threshold = 0.2 # m, points farther apart than this will be considered separate clusters
         self.min_cluster_size = 5 # cluster with fewer points wont be considered an object
 
@@ -58,7 +58,7 @@ class ObjectDetectionNode(Node):
                     continue
                 # it's debatable whether the representative point for the cluster should be the closest point to the neato or the centroid of all points
                 # this one is the closest point to the neato
-                representative_point = points_in_cluster[np.argmin(np.linalg.vector_norm(points_in_cluster, axis=1))]
+                representative_point = points_in_cluster[np.argmin(np.linalg.norm(points_in_cluster, axis=1))]
                 print(f"Object detected! {len(points_in_cluster)} points, rep point: {representative_point} ({np.linalg.norm(representative_point)}m away)")
                 object_positions.append(tuple(representative_point))
 

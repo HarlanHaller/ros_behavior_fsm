@@ -1,3 +1,6 @@
+from glob import glob
+import os
+
 from setuptools import find_packages, setup
 
 package_name = 'ros_behavior_fsm'
@@ -10,6 +13,7 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        (os.path.join('share', package_name, 'launch'), glob('launch/*'))
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -27,7 +31,8 @@ setup(
             'drive_square = ros_behavior_fsm.drive_square:main',
             'object_detection = ros_behavior_fsm.object_detection:main',
             'suspicious = ros_behavior_fsm.suspicious:main',
-            'patrol = ros_behavior_fsm.patrol:main'
+            'patrol = ros_behavior_fsm.patrol:main',
+            'attack = ros_behavior_fsm.attack:main'
         ],
     },
 )

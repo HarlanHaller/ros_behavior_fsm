@@ -40,8 +40,8 @@ class ObjectDetectionNode(Node):
         header.frame_id = "base_link"
         self.dbg_point_pub.publish(point_cloud2.create_cloud_xyz32(header, points))
 
-        if len(points) == 0:
-            # no points - no need to detect clusters
+        if len(points) <= 1:
+            # too few points - no need to detect clusters
             object_positions = []
         else:
             # Find clusters of points in space

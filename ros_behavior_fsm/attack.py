@@ -2,12 +2,18 @@
 import rclpy
 import numpy as np
 from rclpy.node import Node
-from geometry_msgs.msg import Twist, Vector3, Pose, Quaternion
+from geometry_msgs.msg import Twist, Vector3, Point, PointStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import String
 from typing import Literal, Optional, Tuple
 from sensor_msgs_py import point_cloud2
+from std_msgs.msg import Header
+from neato2_interfaces.msg import Bump
+import tf2_geometry_msgs
+import tf2_sensor_msgs
+from tf2_ros.buffer import Buffer
+from tf2_ros.transform_listener import TransformListener
 
 
 class AttackNode(Node):
@@ -16,17 +22,106 @@ class AttackNode(Node):
         super().__init__('attack_node')
         # Create a timer that fires ten times per second
         timer_period = 0.1
-        # self.vel_timer = self.create_timer(timer_period, self.compute_and_send_vel)
-        # self.vel_publisher = self.create_publisher(Twist, 'cmd_vel', 10)
+        self.vel_timer = self.create_timer(timer_period, self.compute_and_send_vel)
+
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+
+        self.vel_publisher = self.create_publisher(Twist, 'cmd_vel', 10)
         self.state_publisher = self.create_publisher(String, 'current_state', 10)
+        self.attack_target_dbg_publisher = self.create_publisher(PointStamped, 'attack_target', 10)
         self.state_subscriber = self.create_subscription(String, 'current_state', self.update_state, 10)
-        # self.detected_objects_subscriber = self.create_subscription(PointCloud2, 'detected_clusters', self.on_detected_objects, 10)
-        self.active = True
-        # self.current_velocity: Tuple[float, float] = (0.0, 0.0) # forward vel (m/s), angular vel (rad/s)
+        self.detected_objects_subscriber = self.create_subscription(PointCloud2, 'detected_clusters', self.on_detected_objects, 10)
+        self.bump_subscriber = self.create_subscription(Bump, 'bump', self.on_bump, 10)
+
+        self.active = False
+        self.current_velocity: Tuple[float, float] = (0.0, 0.0) # forward vel (m/s), angular vel (rad/s)
+        self.last_target_pos_odom: Optional[np.ndarray] = None
+        self.last_time_with_target = self.get_clock().now()
+
+        self.declare_parameter('attack_timeout', 4) # s, how long the attack will wait to reacquire a target before returning to patrol
+        self.declare_parameter('max_target_movement', 0.4) # m, how far a target is allowed to move between scans before being thrown out
+        self.declare_parameter('attack_speed', 0.3) # m/s
+        self.declare_parameter('attack_steering_gain', 0.5) # m/s/rad, how hard to turn to get a target in front of us
+
+    def on_detected_objects(self, msg: PointCloud2):
+        """Callback function for object detection update. 
+        Decide what we're attacking, then figure out how to drive to do that."""
+        if not self.active:
+            # don't do any math if we aren't the active state
+            return
+        # extract object positions from the message
+        object_positions = point_cloud2.read_points_numpy(msg).transpose()
+        if np.shape(object_positions)[1] == 0:
+            # no objects detected
+            if (self.get_clock().now() - self.last_time_with_target).seconds_nanoseconds[0] >= self.get_parameter('attack_timeout').value:
+                self.state_publisher.publish("patrol")
+                self.current_velocity = (0.0, 0.0)
+
+        target_pos_baselink = None
+        target_pos_odom = None
+        if self.last_target_pos_odom is None:
+            # pick the target that's closest to straight ahead
+            if np.shape(object_positions)[1] == 1:
+                # only one option
+                target_pos_baselink = object_positions[:, 0]
+            else:
+                # gotta pick!
+                object_thetas = np.arctan2(object_positions[1, :], object_positions[0, :])
+                target_idx = np.argmin(np.abs(object_thetas)) # closest to 0 heading
+                target_pos_baselink = object_positions[:, target_idx]
+            header = Header(stamp=rclpy.time.Time(), frame_id="base_link")
+            point = Point(x = target_pos_baselink[0], y = target_pos_baselink[1])
+            target_pos_baselink_ps = PointStamped(header = header, point = point)
+            target_pos_odom_ps = self.tf_buffer.transform(target_pos_baselink_ps, "odom")
+            target_pos_odom = np.array([target_pos_odom_ps.point.x, target_pos_baselink_ps.point.y, 0])
+            self.last_target_pos_odom = target_pos_odom
+            self.last_time_with_target = self.get_clock().now()
+            self.attack_target_dbg_publisher.publish(target_pos_odom_ps)
+        else:
+            # pick the target that's closest to the last target
+            # forge header to avoid timing issues
+            msg.header.stamp=rclpy.time.Time()
+            object_positions_odom = point_cloud2.read_points_numpy(self.tf_buffer.transform(msg, "odom")).transpose()
+            object_dists_to_last_target = np.linalg.norm((object_positions_odom - self.last_target_pos_odom[:, np.newaxis]), axis=0)
+            # print(f"Selecting target from {object_positions_odom} with dists {object_dists_to_last_target}")
+            if not np.any(object_dists_to_last_target < self.get_parameter('max_target_movement').value):
+                # no current object is close enough to the last one to be trusted
+                return
+            target_pos_odom = object_positions_odom[:, np.argmin(object_dists_to_last_target)]
+            self.last_target_pos_odom = target_pos_odom
+            self.last_time_with_target = self.get_clock().now()
+
+            header = Header(stamp=rclpy.time.Time(), frame_id="odom")
+            point = Point(x = target_pos_odom[0], y = target_pos_odom[1])
+            target_pos_odom_ps = PointStamped(header = header, point = point)
+            target_pos_baselink_ps = self.tf_buffer.transform(target_pos_odom_ps, "base_link")
+            target_pos_baselink = np.array([target_pos_baselink_ps.point.x, target_pos_baselink_ps.point.y, 0])
+            self.attack_target_dbg_publisher.publish(target_pos_odom_ps)
+
+        # by this point we have a target position
+        # now we figure out how to steer to follow them
+        angular_error = np.arctan2(target_pos_baselink[1], target_pos_baselink[0])
+        angular_velocity = self.get_parameter('attack_steering_gain').value * angular_error
+        self.current_velocity = (self.get_parameter('attack_speed').value, float(angular_velocity))
+
+    def on_bump(self, msg: Bump):
+        print(msg)
+        if(any([bump_sensor > 0 for bump_sensor in [msg.left_front, msg.left_side, msg.right_front, msg.right_side]])):
+            print("contact!")
+            self.current_velocity = (0.0, 0.0)
+            self.compute_and_send_vel()
+            self.state_publisher.publish(String(data="terminal"))
         
     def update_state(self, msg: String):
         self.active = (msg.data == "attack")
         print(f"Node: 'attack' -- recived state: {msg.data}, active?: {self.active}")
+
+    def compute_and_send_vel(self):
+        if self.active:
+            # print(f"sending velocity command for {self.current_velocity}")
+            twist_msg = Twist(linear=Vector3(x=self.current_velocity[0],y=0.0,z=0.0), angular=Vector3(x=0.0,y=0.0,z=self.current_velocity[1]))
+            self.vel_publisher.publish(twist_msg)
         
         
 def main(args=None):

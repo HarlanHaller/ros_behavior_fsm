@@ -33,10 +33,10 @@ class PatrolNode(Node):
         self.dead_zone: PointStamped = None
         self.current_velocity: Tuple[float, float] = (0.0, 0.0) # forward vel (m/s), angular vel (rad/s)
         self.declare_parameter('dead_zone_radius', 0.25)
-        self.declare_parameter('wall_follow_distance', 0.5) # m
+        self.declare_parameter('wall_follow_distance', 0.3) # m
         self.declare_parameter('patrol_speed', 0.15) # m/s
         self.declare_parameter('linear_weight', 0.6) # rad/s/m, how much we should turn to correct distance issues
-        self.declare_parameter('angular_weight', 0.3) # rad/s/rad, how much we should turn to correct angle issues
+        self.declare_parameter('angular_weight', 0.6) # rad/s/rad, how much we should turn to correct angle issues
 
     def update_state(self, msg: String):
         self.active = (msg.data == "patrol")
@@ -50,7 +50,7 @@ class PatrolNode(Node):
             return
         # extract object positions from the message
         object_positions = point_cloud2.read_points_numpy(msg).transpose()
-        # print(object_positions)
+        print(object_positions)
         # figure out which object is our protected object
         protected_object = None
         if np.shape(object_positions)[1] == 1:
@@ -65,10 +65,13 @@ class PatrolNode(Node):
                 # print(f'dead zone in base link at x: {dead_zone_base_link.point.x}, y: {dead_zone_base_link.point.y}')
                 tmp = np.array([dead_zone_base_link.point.x, dead_zone_base_link.point.y, 0])
                 dead_zone_np = tmp[:, np.newaxis]
-                # print(f'dist to dead zone: {np.linalg.norm(object_positions-dead_zone_np, axis=0)}')
+                print(f'dist to dead zone: {np.linalg.norm(object_positions-dead_zone_np, axis=0)}')
                 object_positions = object_positions[:, (np.linalg.norm(object_positions-dead_zone_np, axis=0))>self.get_parameter('dead_zone_radius').value]
                 # print(f'filtered: {object_positions}')
-                
+                if np.shape(object_positions)[1] < 1:
+                    # we filtered out all our object positions
+                    print("WARNING: filtered out all positions")
+                    return               
             
             # object_thetas = np.array([np.arctan2(obj.y, obj.x) for obj in object_positions])
             object_thetas = np.arctan2(object_positions[1, :], object_positions[0, :])

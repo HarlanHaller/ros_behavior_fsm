@@ -62,8 +62,8 @@ class SuspiciousNode(Node):
         self.watching_start_time = 0
         
         self.timeOut = 5
-        self.kP = 0.5 #TODO: set this value
-        self.max_acceptable_movement = 0.15 #TODO: set this value
+        self.kP = 1.0 #TODO: set this value
+        self.max_acceptable_movement = 0.25 #TODO: set this value
         
         self.target_turn_amount = None;
         self.turn_start_angle = None;
@@ -94,9 +94,10 @@ class SuspiciousNode(Node):
             elif self.mode == 'Watching':
                 if self.active_pos_start is None:
                     self.active_pos_start = self.active_pos
-                    self.watching_start_time = self.get_clock().now().seconds_nanoseconds()[0]
+                    
         else:
-            self.active_pos = None
+            if self.mode == 'Setup':
+                self.active_pos = None
         
         
     def main_loop(self):
@@ -108,25 +109,27 @@ class SuspiciousNode(Node):
             if self.check_complete():
                 self.send_stop()
                 self.mode = 'Watching'
+                self.watching_start_time = self.get_clock().now().seconds_nanoseconds()[0]
                 print('Watching PoS')
         elif self.mode == 'Watching':
             p1 = self.active_pos
             p2 = self.active_pos_start
             # print(f'current time: {self.get_clock().now().seconds_nanoseconds()[0]}, start time: {self.watching_start_time}')
-            if p2 is None:
-                return
             if self.get_clock().now().seconds_nanoseconds()[0] - self.watching_start_time > self.timeOut:
                 print("Must have been the wind")
-                header = Header(stamp=rclpy.time.Time(), frame_id="base_link")
-                point = Point(x = self.active_pos.x, y = self.active_pos.y)
-                dead_zone_base_link = PointStamped(header = header, point = point)
-                
-                dead_zone = self.tf_buffer.transform(dead_zone_base_link, 'odom')
-                self.dead_zone_publisher.publish(dead_zone)
-                
+                if self.active_pos is not None:
+                    header = Header(stamp=rclpy.time.Time(), frame_id="base_link")
+                    point = Point(x = self.active_pos.x, y = self.active_pos.y)
+                    dead_zone_base_link = PointStamped(header = header, point = point)
+                    
+                    dead_zone = self.tf_buffer.transform(dead_zone_base_link, 'odom')
+                    self.dead_zone_publisher.publish(dead_zone)
+                    
                 self.target_turn_amount = -self.target_turn_amount
                 self.turn_start_angle = None
                 self.mode = 'Turning_Back'
+            if p2 is None or p1 is None:
+                return
             if ((p1.x-p2.x)**2 + (p1.y-p2.y)**2) >= self.max_acceptable_movement**2:
                 self.reset()
                 self.state_publisher.publish(String(data = "attack"))

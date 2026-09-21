@@ -61,13 +61,13 @@ class SuspiciousNode(Node):
         self.active_pos_start: NamedTuple = None
         self.watching_start_time = 0
         
-        self.timeOut = 5
+        self.timeOut = 8
         self.kP = 1.0 #TODO: set this value
-        self.max_acceptable_movement = 0.25 #TODO: set this value
+        self.max_acceptable_movement = 0.2 #TODO: set this value
         
-        self.target_turn_amount = None;
-        self.turn_start_angle = None;
-        self.current_angle = None;
+        self.target_turn_amount = None
+        self.turn_start_angle = None
+        self.current_angle = None
         
         self.mode: Literal['Setup'] | Literal['Turning'] | Literal['Watching'] | Literal['Turning_Back']= 'Setup'
 

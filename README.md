@@ -34,7 +34,7 @@ While in the watching mode when /detected\_clusters updates, if no start point f
 In turning back we run the same code as in turning except once complete we reset the node and move back to Patrol.  
 We decided to clump all of these sub-behaviors into one Node because each is too small to be a reasonable behavior on its own. This structure requires a coordinator in the form of the main loop to handle the code that should run in each mode that wasn’t tied to a callback. While this structure did work for the Suspicious node, we would not use this in the future as it made code hard to work on and very messy. We did not start off with a set architecture in mind so functionality is split between the coordinator and many of the callbacks. This leads to issues where callbacks update in an order we are not expecting, requiring us to have many None checks and contingency handling. In the future we would put in the overhead to make an action server which could turn each sub-behavior into an isolated action which would clean up the code.  
 For the rosbag of this feature see: complete\_fsm\_demo.bag. Below is a flow chart capturing the rough structure of the Suspicious behavior:  
-
+![Suspicous flow chart](/assets/flow_chart.png)
 
 And a GIF, extracted from the [complete demo video](https://youtu.be/vhD9_3_0Jac):  
 
@@ -77,7 +77,7 @@ The drive in square behavior is unused in our FSM. It, as the name suggests, dri
 
 A Neato running this project is intended to act as a “guard dog” \- that is, to be able to patrol around an object, detect possible threats, and attack the threats if they persist. The Neato wall-follows around the object it’s protecting, scanning for threats to appear in its LiDaR data. If it detects a threat, it turns to face the threat, and waits to see if the threat moves. If it doesn’t, the Neato returns to patrol, but if the threat does move, then the Neato “attacks”: it chases the threat at full speed until collision.
 
-
+![FSM state diagram](assets/diagram.png)
 
 ### **Implementation Details**
 

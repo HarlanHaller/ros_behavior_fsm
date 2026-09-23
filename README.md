@@ -22,7 +22,7 @@ The most significant design decision involved with the patrol node is the decisi
 
 This behavior is demonstrated in [complete\_fsm\_demo.bag](https://github.com/HarlanHaller/ros_behavior_fsm/tree/main/bags/complete_fsm_demo.bag), between startup and when “suspicious" is broadcast on the `/current_state` topic. It is also shown in the GIF below, extracted from the [complete demo video](https://youtu.be/vhD9_3_0Jac).
 
-<img width="480" height="270" alt="fsm-neato-patrol-mode" src="https://github.com/user-attachments/assets/2b5c867c-6752-4ce0-99f0-b78454687cb0" />
+![/assets/fsm-neato-patrol-mode.gif](/assets/fsm-neato-patrol-mode.gif)
 
 ### **Behavior 2: Suspicious (Turn-to-angle and object tracking)**
 
@@ -38,7 +38,7 @@ For the rosbag of this feature see: complete\_fsm\_demo.bag. Below is a flow cha
 
 And a GIF, extracted from the [complete demo video](https://youtu.be/vhD9_3_0Jac):  
 
-<img width="480" height="270" alt="fsm-neato-suspicious-mode" src="https://github.com/user-attachments/assets/1c2b72c7-c87e-4379-bbe2-f3924ac52669" />
+![/assets/fsm-neato-suspicious-mode.gif](/assets/fsm-neato-suspicious-mode.gif)
 
 
 ### **Behavior 3: Attack (Person following and emergency stop)**
@@ -53,7 +53,7 @@ The decision to segment the attack behavior as its own node is fairly natural, a
 
 This behavior is demonstrated in [complete\_fsm\_demo.bag](https://github.com/HarlanHaller/ros_behavior_fsm/tree/main/bags/complete_fsm_demo.bag), between when `”attack”` is broadcast on the `/current_state` topic and when “terminal” is broadcast on the same. It is also shown in the GIF below, extracted from the [complete demo video](https://youtu.be/vhD9_3_0Jac).
 
-<img width="480" height="270" alt="fsm-neato-attack-mode" src="https://github.com/user-attachments/assets/50e6bc98-1813-4b4d-aed6-1ca256f829df" />
+![fsm-neato-attack-mode](/assets/fsm-neato-attack-mode.gif)
 
 ### **Supporting Node: Object Detection**
 

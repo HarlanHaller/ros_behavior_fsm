@@ -46,9 +46,11 @@ class SuspiciousNode(Node):
         timer_period = 0.1
         self.main_loop_timer = self.create_timer(timer_period, self.main_loop)
         
+        #Sets up tf2 buffer and listener to handle tranformations
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         
+        #Create the publishers and subscribers we need
         self.vel_publisher = self.create_publisher(Twist, 'cmd_vel', 10)
         self.state_publisher = self.create_publisher(String, 'current_state', 10)
         self.dead_zone_publisher = self.create_publisher(PointStamped, 'dead_zone', 10)
@@ -56,125 +58,168 @@ class SuspiciousNode(Node):
         self.state_subscriber = self.create_subscription(String, 'current_state', self.update_state, 10)
         self.detecter_objetcs_subscriber = self.create_subscription(PointCloud2, 'detected_clusters', self.detected_objects, 10)
         
-        self.active = False
-        self.active_pos: NamedTuple = None
-        self.active_pos_start: NamedTuple = None
-        self.watching_start_time = 0
+        # Initialize variables
+        self.active = False # tracks if the node should be active
+        self.active_pos: NamedTuple = None # records the location of the closest object on the right of Neato
+        #PoS stands for point of suspicion
+        self.active_pos_start: NamedTuple = None # Used in wathcing records the position at the start to determine movement
+        self.watching_start_time = 0 # Used in wathcing to record time we started watching
         
-        self.timeOut = 8
-        self.kP = 1.0 #TODO: set this value
-        self.max_acceptable_movement = 0.2 #TODO: set this value
+        self.timeOut = 5 # the length of we wait to see if the PoS has moved
+        self.kP = 1.0 # Used in P loop to turn to PoS or turn back
+        self.max_acceptable_movement = 0.2 #Max amount the PoS can move before attacking
         
-        self.target_turn_amount = None
-        self.turn_start_angle = None
-        self.current_angle = None
+        self.target_turn_amount = None # set to the amount to turn to reach the PoS (sign is important)
+        self.turn_start_angle = None # records the angle we started turning from
+        self.current_angle = None # set to the current angle of the Neato as reported by /odom
         
+        #Tracks the internal state
         self.mode: Literal['Setup'] | Literal['Turning'] | Literal['Watching'] | Literal['Turning_Back']= 'Setup'
 
 
     def update_state(self, msg: String):
+        """if we recive 'suspicous' from /current_state set active to true otherwise false"""
         self.active = (msg.data == "suspicious")
         print(f"Node: 'suspicious' -- recived state: {msg.data}, active?: {self.active}")
         
     def detected_objects(self, msg: PointCloud2):
+        """processes objects detected and reported over /detected_clusters"""
+        #If we are not active or tunring we dont want this code. 
         if (not self.active) or self.mode == 'Turning' or self.mode == 'Turning_Back':
             return
+        #extract objects as a lsit of namedTuples
         objects = point_cloud2.read_points_list(msg, ["x", "y"])
+        #get closest object
         closest = None
         closest_dist = 10000
         for (i, obj) in enumerate(objects):
             if obj.y <= 0:
                 if (obj.x**2 + obj.y**2 < closest_dist): closest = i
         if closest is not None:
+            #if we found an object set active_pos
             self.active_pos = objects[closest]
             if self.mode == 'Setup':
+                #if we are in setup find the amount to turn
                 self.target_turn_amount = np.arctan2(self.active_pos.y, self.active_pos.x)
                 # print(f'turning amount: {self.target_turn_amount}')
+                #set mode to turning
                 self.mode = 'Turning'
             elif self.mode == 'Watching':
+                # if wer are in wathcing and the start pos for watching has not been set, set it
                 if self.active_pos_start is None:
                     self.active_pos_start = self.active_pos
                     
         else:
+            # if not object is detected and we are still in setup clear the active_pos
+            # we do not clear in any other mode to avoid losing the PoS for a frame if LiDaR drops it
             if self.mode == 'Setup':
                 self.active_pos = None
         
-        
+    #run every .1 seconds main state controller for node
     def main_loop(self):
+        """Main loop of suspicous mode, internal state controller."""
         # print(self.mode)
+        #dont execute if in setup or not active
         if not self.active or self.mode == 'Setup':
             return
         elif self.mode == 'Turning':
+            #if we are turning send turn commadns then check if we have compleated the turn
             self.compute_and_send_vel()
             if self.check_complete():
+                # if we have stop the Neato and enter watching
                 self.send_stop()
                 self.mode = 'Watching'
                 self.watching_start_time = self.get_clock().now().seconds_nanoseconds()[0]
                 print('Watching PoS')
         elif self.mode == 'Watching':
+            #If we are watching check if we have timed out or the PoS has moved
             p1 = self.active_pos
             p2 = self.active_pos_start
             # print(f'current time: {self.get_clock().now().seconds_nanoseconds()[0]}, start time: {self.watching_start_time}')
             if self.get_clock().now().seconds_nanoseconds()[0] - self.watching_start_time > self.timeOut:
+                # if we have timed out publish the new dead zone
                 print("Must have been the wind")
                 if self.active_pos is not None:
+                    #Null check because sometime we lose the objects before timeout
+                    #create a point stamed for the dead_zone
                     header = Header(stamp=rclpy.time.Time(), frame_id="base_link")
                     point = Point(x = self.active_pos.x, y = self.active_pos.y)
                     dead_zone_base_link = PointStamped(header = header, point = point)
                     
+                    #tranform the point to odom and publish it
                     dead_zone = self.tf_buffer.transform(dead_zone_base_link, 'odom')
                     self.dead_zone_publisher.publish(dead_zone)
+                    #we tranform to odom so patrol can continuesly place the deadzone in the same positon in the world frame
                     
+                # setup for turning back:
+                # we want to turn same amount oposite way
                 self.target_turn_amount = -self.target_turn_amount
                 self.turn_start_angle = None
                 self.mode = 'Turning_Back'
             if p2 is None or p1 is None:
                 return
+            # Null check because this cuased crashes sometimes
+            # Check if the PoS has moved from starting positon using simple dist calc
             if ((p1.x-p2.x)**2 + (p1.y-p2.y)**2) >= self.max_acceptable_movement**2:
+                # if it has moved reset the node and attack
                 self.reset()
                 self.state_publisher.publish(String(data = "attack"))
                 print("Woof Woof - Attacking!!!!")
         elif self.mode == 'Turning_Back':
+            #If we are turning back do the same process as turning
             self.compute_and_send_vel()
             if self.check_complete():
                 self.send_stop()
                 print('Back to work')
+                # Accept when we compleate we reset the node and move to patrol
                 self.reset()
                 self.state_publisher.publish(String(data = "patrol"))
             
         
         
     def process_odom(self, msg: Odometry):
+        """handels new odometry data from /odom"""
+        #we dont run this code if we are inactive
         if not self.active:
             return
+        # set current angle
         self.current_angle = quat_to_yaw(msg.pose.pose.orientation)
+        # if we are turning and we have not set the start angle for turning yet set it.
         if self.turn_start_angle is None and (self.mode == 'Turning' or self.mode=='Turning_Back' ):
             self.turn_start_angle = self.current_angle
             
             
     def check_complete(self):
+        """checks if turning is compleate in turning, turning back"""
+        #Null check to prevent error
         if self.turn_start_angle is None:
             return
+        #calculate the angle we have traveled so far
         angle_traveled = short_way_around_angle(self.current_angle, self.turn_start_angle)
         return abs(angle_traveled - self.target_turn_amount) < np.deg2rad(5)
 
     def compute_and_send_vel(self):
+        """Calculates desired turn rate with P loop and publishes to /cmd_vel """
         if self.turn_start_angle is None:
             return
         angle_traveled = short_way_around_angle(self.current_angle, self.turn_start_angle)
         # print(f'angle traveled {angle_traveled}')
         error = self.target_turn_amount - angle_traveled
         # print(f'target turn amount: {self.target_turn_amount}, error: {error}')
+        #P loop calclation
         angular_vel = self.kP*error
         
+        #Send twist mesage with calculated velocity to /cmd_vel
         twist_msg = Twist(linear=Vector3(x=0.0,y=0.0,z=0.0), angular=Vector3(x=0.0,y=0.0,z=angular_vel))
         self.vel_publisher.publish(twist_msg)
         
     def send_stop(self):
+        """Send a stop command to /cmd_vel"""
         twist_msg = Twist(linear=Vector3(x=0.0,y=0.0,z=0.0), angular=Vector3(x=0.0,y=0.0,z=0.0))
         self.vel_publisher.publish(twist_msg)
         
     def reset(self):
+        """Resets the node to its initial state so it can be started again cleanly"""
         self.active = False
         self.mode = 'Setup'
         self.active_pos_start = None
